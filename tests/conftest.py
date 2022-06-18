@@ -59,7 +59,7 @@ def amount(accounts, token, user):
     amount = 10_000 * 10 ** token.decimals()
     # In order to get some funds for the token you are about to use,
     # it impersonate an exchange address to use it's funds.
-    reserve = accounts.at("0x31F8Cc382c9898b273eff4e0b7626a6987C846E8", force=True)
+    reserve = accounts.at("0x3DdfA8eC3052539b6C9549F12cEA2C295cfF5296", force=True)
     token.transfer(user, amount, {"from": reserve})
     yield amount
 
@@ -71,7 +71,7 @@ def lusd():
 
 @pytest.fixture
 def lusd_whale(accounts):
-    yield accounts.at("0x31F8Cc382c9898b273eff4e0b7626a6987C846E8", force=True)
+    yield accounts.at("0x3DdfA8eC3052539b6C9549F12cEA2C295cfF5296", force=True)
 
 
 @pytest.fixture

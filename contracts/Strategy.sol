@@ -37,6 +37,8 @@ contract Strategy is BaseStrategy {
     // Uniswap v3 router to do LQTY->ETH
     ISwapRouter internal constant router =
         ISwapRouter(0xE592427A0AEce92De3Edee1F18E0157C05861564);
+    
+    address constant uniDaiLusd = 0x16980C16811bDe2B3358c1Ce4341541a4C772Ec9;
 
     // LUSD3CRV Curve Metapool
     IStableSwapExchange internal constant curvePool =
@@ -58,6 +60,7 @@ contract Strategy is BaseStrategy {
     uint24 public ethToDaiFee;
     uint24 public daiToLusdFee;
 
+    uint256 public tipPercent = 100;
     // Minimum expected output when swapping
     // This should be relative to MAX_BPS representing 100%
     uint256 public minExpectedSwapPercentage;
@@ -130,6 +133,11 @@ contract Strategy is BaseStrategy {
         minExpectedSwapPercentage = _minExpectedSwapPercentage;
     }
 
+    function setTipPercent(uint256 _tipPercent) external onlyEmergencyAuthorized {
+        require(_tipPercent <= MAX_BPS, "Too many Bips");
+        tipPercent = _tipPercent;
+    }
+
     // Wrapper around `provideToSP` to allow forcing a deposit externally
     // This could be useful to trigger LQTY / ETH transfers without harvesting.
     // `provideToSP` will revert if not enough funds are provided so no need
@@ -153,10 +161,11 @@ contract Strategy is BaseStrategy {
         return "StrategyLiquityStabilityPoolLUSD";
     }
 
+    //This treats 1 DAI = 1 LUSD which may not be true and should not be used for any real accounting
     function estimatedTotalAssets() public view override returns (uint256) {
         // 1 LUSD = 1 USD *guaranteed* (TM)
         return
-            totalLUSDBalance().add(
+            totalLUSDBalance().add(DAI.balanceOf(address(this))).add(
                 totalETHBalance().mul(priceFeed.lastGoodPrice()).div(1e18)
             );
     }
@@ -231,12 +240,14 @@ contract Strategy is BaseStrategy {
             stabilityPool.withdrawFromSP(amountToWithdraw);
         }
 
-        // After withdrawing from the stability pool it could happen that we have
-        // enough LQTY / ETH to cover a loss before reporting it.
-        // However, doing a swap at this point could make withdrawals insecure
-        // and front-runnable, so we assume LUSD that cannot be returned is a
-        // realized loss.
+        //A potentially large amount of the strat may be in DAI so we will swap from DAI to LUSD
+        // We will only swap the difference not the whole balance to limit insecurities.
         uint256 looseWant = balanceOfWant();
+        if(_amountNeeded > looseWant) {
+            _swapAmountFromDaiToLusd(_amountNeeded.sub(looseWant));
+        }
+
+        looseWant = balanceOfWant();
         if (_amountNeeded > looseWant) {
             _liquidatedAmount = looseWant;
             _loss = _amountNeeded.sub(looseWant);
@@ -251,7 +262,12 @@ contract Strategy is BaseStrategy {
         override
         returns (uint256 _amountFreed)
     {
-        (_amountFreed, ) = liquidatePosition(estimatedTotalAssets());
+        stabilityPool.withdrawFromSP(
+            stabilityPool.getCompoundedLUSDDeposit(address(this))
+        );
+        //Swap any DAI back to LUSD with any slippage
+        minExpectedSwapPercentage = 0;
+        _sellDAIforLUSD();
     }
 
     function prepareMigration(address _newStrategy) internal override {
@@ -442,4 +458,62 @@ contract Strategy is BaseStrategy {
             );
         router.exactInputSingle(params);
     }
+
+    function _swapAmountFromDaiToLusd(uint256 _amount) internal {
+        // These methods will assume 1 DAI = 1 LUSD and attempt to enforce
+        // min output to be at least minExpectedSwapPercentage of balance
+        if(DAI.balanceOf(address(this)) == 0) return;
+
+        if (convertDAItoLUSDonCurve) {
+            _sellDAIAmountForLUSDonCurve(_amount);
+        } else {
+            _sellDAIAmountForLUSDonUniswap(_amount);
+        }
+    }
+
+    function _sellDAIAmountForLUSDonCurve(uint256 _amount) internal {
+        //No swap to amount so Either swap all of the DAI we have or amount * (1 + slippageBipsAllowed)
+        uint256 toSwap = Math.min(DAI.balanceOf(address(this)), _amount.mul(MAX_BPS).div(minExpectedSwapPercentage));
+
+        _checkAllowance(address(curvePool), DAI, toSwap);
+
+        curvePool.exchange_underlying(
+            1, // from DAI index
+            0, // to LUSD index
+            toSwap, // amount
+            toSwap.mul(minExpectedSwapPercentage).div(MAX_BPS) // minDy
+        );
+    }
+
+    function _sellDAIAmountForLUSDonUniswap(uint256 _amount) internal {
+        uint256 toSwap = Math.min(DAI.balanceOf(address(this)), _amount.mul(MAX_BPS).div(minExpectedSwapPercentage));
+
+        _checkAllowance(address(router), DAI, toSwap);
+
+        ISwapRouter.ExactInputSingleParams memory params =
+            ISwapRouter.ExactInputSingleParams(
+                address(DAI), // tokenIn
+                address(want), // tokenOut
+                daiToLusdFee, // DAI-LUSD fee
+                address(this), // recipient
+                now, // deadline
+                toSwap, // amountIn
+                toSwap.mul(minExpectedSwapPercentage).div(MAX_BPS), // amountOut
+                0 // sqrtPriceLimitX96
+            );
+        router.exactInputSingle(params);
+    }
+
+    function claimAndSellEth() external onlyGovernance {
+        if (stabilityPool.getCompoundedLUSDDeposit(address(this)) > 0) {
+            stabilityPool.withdrawFromSP(0);
+        }
+
+        uint256 toTip = address(this).balance.mul(tipPercent).div(MAX_BPS);
+        (bool sent, ) = msg.sender.call{value: toTip}("");
+        require(sent); // dev: could not send ether to governance
+
+        _sellETHforDAI();
+    }
+
 }

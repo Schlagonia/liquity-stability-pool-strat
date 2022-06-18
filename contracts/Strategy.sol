@@ -37,8 +37,6 @@ contract Strategy is BaseStrategy {
     // Uniswap v3 router to do LQTY->ETH
     ISwapRouter internal constant router =
         ISwapRouter(0xE592427A0AEce92De3Edee1F18E0157C05861564);
-    
-    address constant uniDaiLusd = 0x16980C16811bDe2B3358c1Ce4341541a4C772Ec9;
 
     // LUSD3CRV Curve Metapool
     IStableSwapExchange internal constant curvePool =

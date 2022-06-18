@@ -81,7 +81,7 @@ def dai():
 
 @pytest.fixture
 def dai_whale(accounts):
-    yield accounts.at("0x028171bCA77440897B824Ca71D1c56caC55b68A3", force=True)
+    yield accounts.at("0x5D38B4e4783E34e2301A2a36c39a03c45798C4dD", force=True)
 
 
 @pytest.fixture
@@ -91,7 +91,7 @@ def lqty():
 
 @pytest.fixture
 def lqty_whale(accounts):
-    yield accounts.at("0xfEE47986A4B9083d7dB1829BeEd6f88A91DD4338", force=True)
+    yield accounts.at("0x4f9Fbb3f1E99B56e0Fe2892e623Ed36A76Fc605d", force=True)
 
 
 @pytest.fixture

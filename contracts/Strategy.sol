@@ -228,24 +228,19 @@ contract Strategy is BaseStrategy {
         // Only need to free the amount of want not readily available
         uint256 amountToWithdraw = _amountNeeded.sub(balance);
 
-        // Cannot withdraw more than what we have in deposit
-        amountToWithdraw = Math.min(
-            amountToWithdraw,
-            stabilityPool.getCompoundedLUSDDeposit(address(this))
-        );
-
-        if (amountToWithdraw > 0) {
+        uint256 stakedBalance = stabilityPool.getCompoundedLUSDDeposit(address(this));
+        //A potentially large amount of the strat may be in DAI so we will swap from DAI to LUSD
+        // We will only swap the difference not the whole balance to limit insecurities.
+        if(amountToWithdraw > stakedBalance) {
+            stabilityPool.withdrawFromSP(stakedBalance);
+            _swapAmountFromDaiToLusd(amountToWithdraw.sub(stakedBalance));
+        } else {
             stabilityPool.withdrawFromSP(amountToWithdraw);
         }
 
         //A potentially large amount of the strat may be in DAI so we will swap from DAI to LUSD
         // We will only swap the difference not the whole balance to limit insecurities.
         uint256 looseWant = balanceOfWant();
-        if(_amountNeeded > looseWant) {
-            _swapAmountFromDaiToLusd(_amountNeeded.sub(looseWant));
-        }
-
-        looseWant = balanceOfWant();
         if (_amountNeeded > looseWant) {
             _liquidatedAmount = looseWant;
             _loss = _amountNeeded.sub(looseWant);
@@ -502,15 +497,17 @@ contract Strategy is BaseStrategy {
         router.exactInputSingle(params);
     }
 
-    function claimAndSellEth() external onlyGovernance {
+    //For a keeper/strategist to call to move eth to dai
+    //Will reimburse the caller the amount to call or a maximum amount
+    function claimAndSellEth(uint256 callCost) external onlyGovernance {
         if (stabilityPool.getCompoundedLUSDDeposit(address(this)) > 0) {
             stabilityPool.withdrawFromSP(0);
         }
 
-        uint256 toTip = address(this).balance.mul(tipPercent).div(MAX_BPS);
+        uint256 maxTip = address(this).balance.mul(tipPercent).div(MAX_BPS);
+        uint256 toTip = Math.min(maxTip, callCost);
         (bool sent, ) = msg.sender.call{value: toTip}("");
         require(sent); // dev: could not send ether to governance
-
         _sellETHforDAI();
     }
 

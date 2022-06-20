@@ -66,6 +66,8 @@ contract Strategy is BaseStrategy {
     // 100%
     uint256 internal constant MAX_BPS = 10000;
 
+    uint256 public maxEthToSell;
+
     constructor(address _vault) public BaseStrategy(_vault) {
         // Use curve as default route to swap DAI for LUSD
         convertDAItoLUSDonCurve = true;
@@ -79,7 +81,10 @@ contract Strategy is BaseStrategy {
         daiToLusdFee = 500;
 
         // Allow 1% slippage by default
-        minExpectedSwapPercentage = 9900;
+        minExpectedSwapPercentage = 9500;
+
+        //Set to max on deploy and updated later if needed to
+        maxEthToSell = type(uint256).max;
     }
 
     // Strategy should be able to receive ETH
@@ -129,6 +134,11 @@ contract Strategy is BaseStrategy {
         onlyEmergencyAuthorized
     {
         minExpectedSwapPercentage = _minExpectedSwapPercentage;
+    }
+
+    function setMaxEthToSell(uint256 _max) external onlyEmergencyAuthorized{
+        require(_max > 0, "Cannot be set to 0");
+        maxEthToSell = _max;
     }
 
     function setTipPercent(uint256 _tipPercent) external onlyEmergencyAuthorized {
@@ -259,8 +269,12 @@ contract Strategy is BaseStrategy {
             stabilityPool.getCompoundedLUSDDeposit(address(this))
         );
         //Swap any DAI back to LUSD with any slippage
-        minExpectedSwapPercentage = 0;
-        _sellDAIforLUSD();
+        //May need to adjust slippage allowed before this depending on peg
+        if (DAI.balanceOf(address(this)) > 0) {
+            _sellDAIforLUSD();
+        }
+
+        return balanceOfWant();
     }
 
     function prepareMigration(address _newStrategy) internal override {
@@ -499,16 +513,51 @@ contract Strategy is BaseStrategy {
 
     //For a keeper/strategist to call to move eth to dai
     //Will reimburse the caller the amount to call or a maximum amount
-    function claimAndSellEth(uint256 callCost) external onlyGovernance {
+    function claimAndSellEth(uint256 callCost) external onlyKeepers {
         if (stabilityPool.getCompoundedLUSDDeposit(address(this)) > 0) {
             stabilityPool.withdrawFromSP(0);
         }
 
-        uint256 maxTip = address(this).balance.mul(tipPercent).div(MAX_BPS);
+        uint256 ethBalance = address(this).balance;
+        require(ethBalance > 0, "No eth to trade");
+        ethBalance = Math.min(ethBalance, maxEthToSell);
+
+        uint256 maxTip = ethBalance.mul(tipPercent).div(MAX_BPS);
         uint256 toTip = Math.min(maxTip, callCost);
         (bool sent, ) = msg.sender.call{value: toTip}("");
         require(sent); // dev: could not send ether to governance
-        _sellETHforDAI();
+        
+        //have to reupdate to account for the tip that was sent
+        ethBalance = Math.min(address(this).balance, maxEthToSell);
+        uint256 ethUSD = priceFeed.fetchPrice();
+        
+        // Balance * Price * Swap Percentage (adjusted to 18 decimals)
+        uint256 minExpected =
+            ethBalance
+                .mul(ethUSD)
+                .mul(minExpectedSwapPercentage)
+                .div(MAX_BPS)
+                .div(1e18);
+
+        ISwapRouter.ExactInputSingleParams memory params =
+            ISwapRouter.ExactInputSingleParams(
+                address(WETH), // tokenIn
+                address(DAI), // tokenOut
+                ethToDaiFee, // ETH-DAI fee
+                address(this), // recipient
+                now, // deadline
+                ethBalance, // amountIn
+                minExpected, // amountOut
+                0 // sqrtPriceLimitX96
+            );
+
+        router.exactInputSingle{value: ethBalance}(params);
+        router.refundETH();
+    }
+
+    //To be called if we need to swap less than the full amount of DAI to LUSD due to peg 
+    function swapAmountFromDaiToLusd(uint256 _amount) external onlyEmergencyAuthorized {
+        _swapAmountFromDaiToLusd(_amount);
     }
 
 }

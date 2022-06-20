@@ -25,7 +25,7 @@ def test_operation(chain, token, vault, strategy, user, amount, RELATIVE_APPROX)
     )
 
 
-def test_emergency_exit(chain, token, vault, strategy, user, amount, RELATIVE_APPROX):
+def test_emergency_exit(chain, token, vault, strategy, user, gov, amount, RELATIVE_APPROX):
     # Deposit to the vault
     token.approve(vault.address, amount, {"from": user})
     vault.deposit(amount, {"from": user})
@@ -35,9 +35,10 @@ def test_emergency_exit(chain, token, vault, strategy, user, amount, RELATIVE_AP
 
     # set emergency and exit
     strategy.setEmergencyExit()
+    
     chain.sleep(1)
     strategy.harvest()
-    assert strategy.estimatedTotalAssets() < amount
+    assert pytest.approx(token.balanceOf(vault.address), rel=RELATIVE_APPROX) == amount
 
 
 def test_profitable_harvest(
@@ -233,7 +234,7 @@ def test_loss_in_lusd_but_ends_in_profit_because_lqty_rewards_are_higher(
     accounts.at(weth, force=True).transfer(strategy, Wei("1 ether"))
     lqty.transfer(strategy, 1500 * (10 ** lqty.decimals()), {"from": lqty_whale})
     strategy.withdrawLUSD(
-        10_000 * (10 ** token.decimals()), {"from": strategy.strategist()}
+        1_000 * (10 ** token.decimals()), {"from": strategy.strategist()}
     )
 
     # Send LUSD away so it is not in the strategy's balance

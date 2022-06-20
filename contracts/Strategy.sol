@@ -58,7 +58,6 @@ contract Strategy is BaseStrategy {
     uint24 public ethToDaiFee;
     uint24 public daiToLusdFee;
 
-    uint256 public tipPercent = 100;
     // Minimum expected output when swapping
     // This should be relative to MAX_BPS representing 100%
     uint256 public minExpectedSwapPercentage;
@@ -66,6 +65,9 @@ contract Strategy is BaseStrategy {
     // 100%
     uint256 internal constant MAX_BPS = 10000;
 
+    //Percent relative to MAX_BPS of the most we will give as a tip in claimEthAndSell() in relation to the claimed ETH up to CallCost
+    uint256 public tipPercent = 100;
+    //Max eth to sell in one transaction through calimEthAndSell()
     uint256 public maxEthToSell;
 
     constructor(address _vault) public BaseStrategy(_vault) {
@@ -80,8 +82,8 @@ contract Strategy is BaseStrategy {
         ethToDaiFee = 3000;
         daiToLusdFee = 500;
 
-        // Allow 1% slippage by default
-        minExpectedSwapPercentage = 9500;
+        // Allow 3% slippage by default
+        minExpectedSwapPercentage = 9700;
 
         //Set to max on deploy and updated later if needed to
         maxEthToSell = type(uint256).max;
@@ -136,11 +138,14 @@ contract Strategy is BaseStrategy {
         minExpectedSwapPercentage = _minExpectedSwapPercentage;
     }
 
+    //This is used to update the max amount of eth we will swap to DAI through the manual claimEthandSell function
+    //Cannot be used in regular harvests or the strategy would report a loss when not all eth is swapped
     function setMaxEthToSell(uint256 _max) external onlyEmergencyAuthorized{
         require(_max > 0, "Cannot be set to 0");
         maxEthToSell = _max;
     }
 
+    //Changes the percent of which is available to tip the caller of claimEthandSell()
     function setTipPercent(uint256 _tipPercent) external onlyEmergencyAuthorized {
         require(_tipPercent <= MAX_BPS, "Too many Bips");
         tipPercent = _tipPercent;
@@ -243,13 +248,11 @@ contract Strategy is BaseStrategy {
         // We will only swap the difference not the whole balance to limit insecurities.
         if(amountToWithdraw > stakedBalance) {
             stabilityPool.withdrawFromSP(stakedBalance);
-            _swapAmountFromDaiToLusd(amountToWithdraw.sub(stakedBalance));
+            _swapDaiAmountToLusd(amountToWithdraw.sub(stakedBalance));
         } else {
             stabilityPool.withdrawFromSP(amountToWithdraw);
         }
 
-        //A potentially large amount of the strat may be in DAI so we will swap from DAI to LUSD
-        // We will only swap the difference not the whole balance to limit insecurities.
         uint256 looseWant = balanceOfWant();
         if (_amountNeeded > looseWant) {
             _liquidatedAmount = looseWant;
@@ -268,7 +271,7 @@ contract Strategy is BaseStrategy {
         stabilityPool.withdrawFromSP(
             stabilityPool.getCompoundedLUSDDeposit(address(this))
         );
-        //Swap any DAI back to LUSD with any slippage
+        //Swap any DAI back to LUSD
         //May need to adjust slippage allowed before this depending on peg
         if (DAI.balanceOf(address(this)) > 0) {
             _sellDAIforLUSD();
@@ -283,7 +286,7 @@ contract Strategy is BaseStrategy {
         }
 
         // Withdraw entire LUSD balance from Stability Pool
-        // ETH + LQTY gains should be harvested before migrating
+        // ETH + LQTY + DAI gains should be harvested before migrating
         // `migrate` will automatically forward all `want` in this strategy to the new one
         stabilityPool.withdrawFromSP(
             stabilityPool.getCompoundedLUSDDeposit(address(this))
@@ -466,9 +469,8 @@ contract Strategy is BaseStrategy {
         router.exactInputSingle(params);
     }
 
-    function _swapAmountFromDaiToLusd(uint256 _amount) internal {
-        // These methods will assume 1 DAI = 1 LUSD and attempt to enforce
-        // min output to be at least minExpectedSwapPercentage of balance
+    function _swapDaiAmountToLusd(uint256 _amount) internal {
+        
         if(DAI.balanceOf(address(this)) == 0) return;
 
         if (convertDAItoLUSDonCurve) {
@@ -479,7 +481,7 @@ contract Strategy is BaseStrategy {
     }
 
     function _sellDAIAmountForLUSDonCurve(uint256 _amount) internal {
-        //No swap to amount so Either swap all of the DAI we have or amount * (1 + slippageBipsAllowed)
+        //_amount is denominated in want. Since there is o swap to amount Either swap all of the DAI we have or amount * (1 + slippageBipsAllowed)
         uint256 toSwap = Math.min(DAI.balanceOf(address(this)), _amount.mul(MAX_BPS).div(minExpectedSwapPercentage));
 
         _checkAllowance(address(curvePool), DAI, toSwap);
@@ -513,6 +515,7 @@ contract Strategy is BaseStrategy {
 
     //For a keeper/strategist to call to move eth to dai
     //Will reimburse the caller the amount to call or a maximum amount
+    //If we have an extreme amount of ETH maxEthtoSell can be updated before this call
     function claimAndSellEth(uint256 callCost) external onlyKeepers {
         if (stabilityPool.getCompoundedLUSDDeposit(address(this)) > 0) {
             stabilityPool.withdrawFromSP(0);
@@ -555,9 +558,9 @@ contract Strategy is BaseStrategy {
         router.refundETH();
     }
 
-    //To be called if we need to swap less than the full amount of DAI to LUSD due to peg 
-    function swapAmountFromDaiToLusd(uint256 _amount) external onlyEmergencyAuthorized {
-        _swapAmountFromDaiToLusd(_amount);
+    //To be called if we need to swap less than the full amount of DAI to LUSD due to the peg or current liquidity 
+    function swapDaiAmountToLusd(uint256 _amount) external onlyEmergencyAuthorized {
+        _swapDaiAmountToLusd(_amount);
     }
 
 }

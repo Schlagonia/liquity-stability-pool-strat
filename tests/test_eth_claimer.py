@@ -138,10 +138,10 @@ def test_manual_sell_dai(
     dai.transfer(strategy.address, amount, {"from": dai_whale})
     assert dai.balanceOf(strategy.address) == amount
 
-    strategy.swapAmountFromDaiToLusd(amount/2, {"from": strategist})
+    strategy.swapDaiAmountToLusd(amount/2, {"from": strategist})
     assert dai.balanceOf(strategy.address) <= amount /2
 
-    strategy.swapAmountFromDaiToLusd(dai.balanceOf(strategy.address), {"from": strategist})
+    strategy.swapDaiAmountToLusd(dai.balanceOf(strategy.address), {"from": strategist})
     #may be a slight amount left due to calculations
     assert dai.balanceOf(strategy.address) < amount/10
 

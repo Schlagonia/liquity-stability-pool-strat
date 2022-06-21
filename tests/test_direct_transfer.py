@@ -80,7 +80,6 @@ def test_direct_transfer_with_actual_lqty_profits(
         vault.strategies(strategy).dict()["totalGain"] > initialProfit + airdropAmount
     )
 
-
 def test_direct_transfer_with_actual_eth_profits(
     vault, strategy, accounts, token, lusd_whale, weth
 ):

@@ -43,7 +43,7 @@ def test_tend(chain, token, vault, strategy, user, amount, weth, dai, accounts, 
 
     assert strategy.balance() == 0
     assert dai.balanceOf(strategy.address) > 0
-"""
+
 
 def test_tend_and_harvest(chain, token, vault, strategy, user, strategist, amount, weth, dai, accounts, keeper, gov, RELATIVE_APPROX):
     # Deposit to the vault
@@ -87,7 +87,7 @@ def test_tend_and_harvest(chain, token, vault, strategy, user, strategist, amoun
     chain.sleep(3600 * 24)
     vault.withdraw({"from": user})
     assert token.balanceOf(user) > user_balance_before
-"""
+
 def test_tip_change(
     chain, token, vault, strategy, user, strategist, amount, weth, dai, accounts, gov, keeper, RELATIVE_APPROX
 ):

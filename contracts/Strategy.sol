@@ -69,15 +69,15 @@ contract Strategy is BaseStrategy {
         Variables for tend() and tendTrigger() to make sure we are actively swapping ETH out
     ***/
     //Bool repersenting whether or not we should tip the keeper calling tend()
-    //Will likely only need to be set during high volatility ans many subsequent tend() calls 
+    //Will likely only need to be set during high volatility due to many subsequent tend() calls 
     bool public tip = false;
-    //The estimated call cost set during tend based on the gas sent with the tx to calc the tip if applicable
+    //The estimated call cost set during tend() based on the gas sent with the tx to calc the tip if applicable
     uint256 public tendCallCost;
-    //The max amount of ETH should be in relation to the total value of the strat 
+    //The max amount of ETH should be in relation to the total value of the strat i.e. 100 == 1%
     uint256 public maxEthPercent;
     //The max amount of ETH denominated in ETH we will allow the strat to hold
     uint256 public maxEthAmount;
-    //Percent relative to MAX_BPS of the most we will give as a tip in claimEthAndSell() in relation to the claimed ETH up to CallCost
+    //Percent relative to MAX_BPS of the most we will give as a tip in claimEthAndSell() in relation to the claimed ETH up to tendCallCost
     uint256 public tipPercent = 100;
     //Max eth to sell in one transaction through calimEthAndSell()
     uint256 public maxEthToSell;
@@ -94,8 +94,8 @@ contract Strategy is BaseStrategy {
         ethToDaiFee = 3000;
         daiToLusdFee = 500;
 
-        // Allow 3% slippage by default
-        minExpectedSwapPercentage = 9700;
+        // Allow 2% slippage by default
+        minExpectedSwapPercentage = 9800;
 
         //Initiall set to 1%
         maxEthPercent = 100;
@@ -165,7 +165,7 @@ contract Strategy is BaseStrategy {
         uint256 _tipPercent,
         uint256 _maxEthToSell
     ) external onlyEmergencyAuthorized {
-        require(_maxEthPercent <= 10000 && _tipPercent <= MAX_BPS, "Too Many Bips");
+        require(_maxEthPercent <= MAX_BPS && _tipPercent <= MAX_BPS, "Too Many Bips");
         require(_maxEthToSell > 0, "Can't be 0");
         maxEthPercent = _maxEthPercent;
         maxEthAmount = _maxEthAmount;
@@ -235,18 +235,13 @@ contract Strategy is BaseStrategy {
         // have already been accounted for in the check above, so we ignore them
         uint256 _amountFreed;
         (_amountFreed, ) = liquidatePosition(_debtOutstanding.add(_profit));
-        if(_amountFreed >= _profit) {
-            _debtPayment = Math.min(_amountFreed.sub(_profit), _debtOutstanding);
-        } else {
-            _profit = _amountFreed;
-            _debtPayment = 0;
-        }
+        _debtPayment = Math.min(_debtOutstanding, _amountFreed);
         
     }
 
     function adjustPosition(uint256 _debtOutstanding) internal override {
         //Functions that should only be used during the Tend() call
-        if(harvestTrigger(69)){
+        if(tendTrigger(69)){
             tendCallCost = gasleft();
             claimAndSellEth();
         }
@@ -560,8 +555,8 @@ contract Strategy is BaseStrategy {
         router.exactInputSingle(params);
     }
 
-    //For a keeper/strategist to call to move eth to dai
-    //Will reimburse the caller the amount to call or a maximum amount
+    //To be called during tend() if needed
+    //Will reimburse the caller the amount to call or a maximum amount if tip == true
     //If we have an extreme amount of ETH maxEthtoSell can be updated before this call
     function claimAndSellEth() internal {
         if (stabilityPool.getCompoundedLUSDDeposit(address(this)) > 0) {
@@ -618,7 +613,7 @@ contract Strategy is BaseStrategy {
         uint256 ethInWant = ethToWant(ethBalance);
         uint256 maxAllowedEth = totalAssets.mul(maxEthPercent).div(MAX_BPS);
 
-        if(ethInWant >= maxAllowedEth) return true;
+        if(ethInWant > maxAllowedEth) return true;
 
         return false;
     }

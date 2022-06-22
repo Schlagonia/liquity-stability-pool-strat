@@ -26,13 +26,7 @@ def test_direct_transfer_increments_profits(
 
     chain.sleep(1)
     strategy.harvest()
-    assert (
-        pytest.approx(
-            vault.strategies(strategy).dict()["totalGain"] / token.decimals(),
-            rel=RELATIVE_APPROX,
-        )
-        == (initialProfit + amount) / token.decimals()
-    )
+    assert (vault.strategies(strategy).dict()["totalGain"] >= (initialProfit + amount))
 
 
 def test_deposit_should_not_increment_profits(vault, strategy, token, lusd_whale):

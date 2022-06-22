@@ -73,9 +73,6 @@ def test_tend_and_harvest(chain, token, vault, strategy, user, strategist, amoun
     strategy.setDoHealthCheck(False, {"from": gov})
     assert strategy.doHealthCheck() == False
    
-    chain.sleep(3600 * 100)
-    accounts.at(weth, force=True).transfer(strategy, Wei("1 ether"))
-    #strategy.setConvertDAItoLUSDonCurve(False)
     strategy.harvest()
 
     assert dai.balanceOf(strategy.address) == 0

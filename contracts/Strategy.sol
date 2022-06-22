@@ -159,13 +159,14 @@ contract Strategy is BaseStrategy {
         tip = _tip;
     }
 
+    //Change tend triggers and variables based on market conditions
     function setTendAmounts(
         uint256 _maxEthPercent,
         uint256 _maxEthAmount,
         uint256 _tipPercent,
         uint256 _maxEthToSell
     ) external onlyEmergencyAuthorized {
-        require(_maxEthPercent <= MAX_BPS && _tipPercent <= MAX_BPS, "Too Many Bips");
+        require(_maxEthPercent <= MAX_BPS && _tipPercent < MAX_BPS, "Too Many Bips");
         require(_maxEthToSell > 0, "Can't be 0");
         maxEthPercent = _maxEthPercent;
         maxEthAmount = _maxEthAmount;
@@ -572,6 +573,7 @@ contract Strategy is BaseStrategy {
         }
         //have to reupdate to account for the tip that was sent
         uint256 ethBalance = Math.min(address(this).balance, maxEthToSell);
+        if(ethBalance == 0) return;
         uint256 ethUSD = priceFeed.fetchPrice();
         
         // Balance * Price * Swap Percentage (adjusted to 18 decimals)

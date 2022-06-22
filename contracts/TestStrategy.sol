@@ -25,7 +25,4 @@ contract TestStrategy is Strategy {
         _claimRewards();
     }
 
-    function _claimAndSellEth() public {
-        claimAndSellEth();
-    }
 }

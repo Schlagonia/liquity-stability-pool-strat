@@ -71,13 +71,11 @@ contract Strategy is BaseStrategy {
     //Bool repersenting whether or not we should tip the keeper calling tend()
     //Will likely only need to be set during high volatility due to many subsequent tend() calls 
     bool public tip = false;
-    //The estimated call cost set during tend() based on the gas sent with the tx to calc the tip if applicable
-    uint256 public tendCallCost;
     //The max amount of ETH should be in relation to the total value of the strat i.e. 100 == 1%
     uint256 public maxEthPercent;
     //The max amount of ETH denominated in ETH we will allow the strat to hold
     uint256 public maxEthAmount;
-    //Percent relative to MAX_BPS of the most we will give as a tip in claimEthAndSell() in relation to the claimed ETH up to tendCallCost
+    //Percent relative to MAX_BPS of the most we will give as a tip in claimEthAndSell() in relation to the claimed ETH up to estimatedCallCost
     uint256 public tipPercent = 100;
     //Max eth to sell in one transaction through calimEthAndSell()
     uint256 public maxEthToSell;
@@ -94,8 +92,8 @@ contract Strategy is BaseStrategy {
         ethToDaiFee = 3000;
         daiToLusdFee = 500;
 
-        // Allow 2% slippage by default
-        minExpectedSwapPercentage = 9800;
+        // Allow % slippage by default
+        minExpectedSwapPercentage = 9700;
 
         //Initiall set to 1%
         maxEthPercent = 100;
@@ -243,8 +241,8 @@ contract Strategy is BaseStrategy {
     function adjustPosition(uint256 _debtOutstanding) internal override {
         //Functions that should only be used during the Tend() call
         if(tendTrigger(69)){
-            tendCallCost = gasleft();
-            claimAndSellEth();
+            //Sell all available eth. Sends the estmated cost to call tend() as the argument
+            claimAndSellEth(gasleft());
         }
         if(DAI.balanceOf(address(this)) > 0) {
             //Try and swap DAI back to LUSD. Only use Curve so we can get an expected amount out to compare before swapping
@@ -559,21 +557,23 @@ contract Strategy is BaseStrategy {
     //To be called during tend() if needed
     //Will reimburse the caller the amount to call or a maximum amount if tip == true
     //If we have an extreme amount of ETH maxEthtoSell can be updated before this call
-    function claimAndSellEth() internal {
+    function claimAndSellEth(uint256 estimatedCallCost) internal {
         if (stabilityPool.getCompoundedLUSDDeposit(address(this)) > 0) {
             stabilityPool.withdrawFromSP(0);
         }
 
+        uint256 ethBalance = Math.min(address(this).balance, maxEthToSell);
+        if(ethBalance == 0) return;
+
         if(tip) {
-            uint256 maxTip = address(this).balance.mul(tipPercent).div(MAX_BPS);
-            uint256 toTip = Math.min(maxTip, tendCallCost);
+            uint256 maxTip = ethBalance.mul(tipPercent).div(MAX_BPS);
+            uint256 toTip = Math.min(maxTip, estimatedCallCost);
    
             (bool sent, ) = msg.sender.call{value: toTip}("");
             require(sent); // dev: could not send ether to governance
         }
         //have to reupdate to account for the tip that was sent
-        uint256 ethBalance = Math.min(address(this).balance, maxEthToSell);
-        if(ethBalance == 0) return;
+        ethBalance = Math.min(address(this).balance, maxEthToSell);
         uint256 ethUSD = priceFeed.fetchPrice();
         
         // Balance * Price * Swap Percentage (adjusted to 18 decimals)

@@ -525,6 +525,8 @@ contract Strategy is BaseStrategy {
         router.exactInputSingle(params);
     }
     
+    //Function only called during tend() that will not send the tx unless we believe it will go through
+    //This allows us to only sell the DAI if we can get enough out without the whole tx failing
     function _tryToSellDAIAmountForLUSDonCurve(uint256 _amount) internal {
 
         uint256 minOut = _amount.mul(minExpectedSwapPercentage).div(MAX_BPS);
@@ -548,6 +550,7 @@ contract Strategy is BaseStrategy {
     //Will reimburse the caller the amount to call or a maximum amount if tip == true
     //If we have an extreme amount of ETH maxEthtoSell can be updated before this call
     function claimAndSellEth(uint256 estimatedCallCost) internal {
+        //First check so we do not continue during a harvest
         if(totalETHBalance() == 0) return;
 
         if (stabilityPool.getCompoundedLUSDDeposit(address(this)) > 0) {
@@ -555,6 +558,7 @@ contract Strategy is BaseStrategy {
         }
 
         uint256 ethBalance = Math.min(address(this).balance, maxEthToSell);
+        //Second check to make sure we actually claimed eth
         if(ethBalance == 0) return;
 
         if(tip) {
@@ -576,13 +580,13 @@ contract Strategy is BaseStrategy {
     }
 
     function tendTrigger(uint256 callCostInWei) public view override returns (bool){
-
         uint256 totalAssets = estimatedTotalAssets();
         uint256 ethBalance = totalETHBalance();
+        if(ethBalance == 0) return false;
 
         if(ethBalance >= maxEthAmount) return true;
 
-        // check if the base fee gas price is higher than we allow. if it is, block harvests.
+        // check if the gas cost is higher than we allow. if it is, block tend.
         if (callCostInWei > ethBalance / 10) return false;
 
         uint256 ethInWant = ethToWant(ethBalance);
@@ -594,22 +598,28 @@ contract Strategy is BaseStrategy {
     }
 
     //This expects TendTrigger is keeping up with ETH accumulation
-    function harvestTrigger(uint256 callCostInWei) public view override returns(bool) {
+    function harvestTrigger(uint256 callCostInWei) public view override returns (bool) {
         // Should not trigger if strategy is not active (no assets and no debtRatio). This means we don't need to adjust keeper job.
         if (!isActive()) {
             return false;
         }
 
+        StrategyParams memory params = vault.strategies(address(this));
         uint256 assets = estimatedTotalAssets();
-        uint256 debt = vault.strategies(address(this)).totalDebt;
+        uint256 debt = params.totalDebt;
 
         // harvest if we have a profit to claim at our upper limit without considering gas price
         uint256 claimableProfit = assets > debt ? assets.sub(debt) : 0;
 
         //Determines if we would likely be able to swap the expected profit from DAI -> LUSD. Should not harvest if not
-        bool canSwap = curvePool.get_dy_underlying(1, 0, claimableProfit) >= claimableProfit.mul(minExpectedSwapPercentage).div(MAX_BPS);
+        //Make sure there is a profit above 1 to avaid errors with curve call
+        if(claimableProfit > 1) {
+            if(curvePool.get_dy_underlying(1, 0, claimableProfit) < claimableProfit.mul(minExpectedSwapPercentage).div(MAX_BPS)) {
+                return false;
+            }
+        }
 
-        if (claimableProfit > harvestProfitMax && canSwap) {
+        if (claimableProfit > harvestProfitMax) {
             return true;
         }
 
@@ -619,16 +629,15 @@ contract Strategy is BaseStrategy {
         }
 
         // harvest if we have a sufficient profit to claim, but only if our gas price is acceptable
-        if (claimableProfit > harvestProfitMin && canSwap) {
+        if (claimableProfit > harvestProfitMin) {
             return true;
         }
-
-        StrategyParams memory params = vault.strategies(address(this));
+        
         // Should not trigger if we haven't waited long enough since previous harvest
         if (block.timestamp.sub(params.lastReport) < minReportDelay) return false;
 
         // harvest no matter what once we reach our maxDelay
-        if (block.timestamp.sub(params.lastReport) > maxReportDelay && canSwap) {
+        if (block.timestamp.sub(params.lastReport) > maxReportDelay) {
             return true;
         }
 

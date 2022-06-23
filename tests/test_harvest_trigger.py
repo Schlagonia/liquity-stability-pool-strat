@@ -21,7 +21,7 @@ def test_triggers(
     # inactive strategy (0 DR and 0 assets) shouldn't be touched by keepers
     gasOracle.setMaxAcceptableBaseFee(10000 * 1e9, {"from": strategist_ms})
     vault.updateStrategyDebtRatio(strategy, 0, {"from": gov})
-    tx = strategy.harvestTrigger(0, {"from": gov})
+    tx = strategy.harvestTrigger(0)
     print("\nShould we harvest? Should be false.", tx)
     assert tx == False
     vault.updateStrategyDebtRatio(strategy, 10000, {"from": gov})
@@ -39,7 +39,7 @@ def test_triggers(
     chain.sleep(1)
 
     # should trigger false, nothing is ready yet
-    tx = strategy.harvestTrigger(0, {"from": gov})
+    tx = strategy.harvestTrigger(10)
     print("\nShould we tend? Should be false.", tx)
     assert tx == False
 
@@ -49,7 +49,7 @@ def test_triggers(
 
     # set our max delay to 1 day so we trigger true, then set it back to 21 days
     strategy.setMaxReportDelay(86400)
-    tx = strategy.harvestTrigger(0, {"from": gov})
+    tx = strategy.harvestTrigger(0)
     print("\nShould we harvest? Should be True.", tx)
     assert tx == True
     strategy.setMaxReportDelay(86400 * 21)
@@ -58,12 +58,12 @@ def test_triggers(
 
     # update our minProfit so our harvest triggers true
     strategy.setHarvestTriggerParams(1e6, 1000000e18, {"from": gov})
-    tx = strategy.harvestTrigger(0, {"from": gov})
+    tx = strategy.harvestTrigger(100)
     print("\nShould we harvest? Should be true.", tx)
     assert tx == True
 
     strategy.setMinExpectedSwapPercentage(9990)
-    tx = strategy.harvestTrigger(0, {"from": gov})
+    tx = strategy.harvestTrigger(0)
     print("\nShould we harvest? Should be False.", tx)
     assert tx == False
 
@@ -71,7 +71,7 @@ def test_triggers(
     
     # update our maxProfit so harvest triggers true
     strategy.setHarvestTriggerParams(1000000e6, 1e6, {"from": gov})
-    tx = strategy.harvestTrigger(0, {"from": gov})
+    tx = strategy.harvestTrigger(1e18)
     print("\nShould we harvest? Should be true.", tx)
     assert tx == True
 
@@ -84,9 +84,9 @@ def test_triggers(
     chain.mine(1)
 
     # harvest should trigger false due to high gas price
-    gasOracle.setMaxAcceptableBaseFee(1 * 1e9, {"from": strategist_ms})
+    gasOracle.setMaxAcceptableBaseFee(10 * 1e9, {"from": strategist_ms})
     chain.mine(1)
-    tx = strategy.harvestTrigger(0, {"from": gov})
+    tx = strategy.harvestTrigger(0)
     print("\nShould we harvest? Should be false.", tx)
     assert tx == False
 

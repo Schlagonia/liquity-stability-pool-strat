@@ -2,7 +2,7 @@
 pragma solidity 0.6.12;
 pragma experimental ABIEncoderV2;
 
-import {BaseStrategy} from "@yearnvaults/contracts/BaseStrategy.sol";
+import {BaseStrategy, StrategyParams} from "@yearnvaults/contracts/BaseStrategy.sol";
 import "@openzeppelin/contracts/math/Math.sol";
 import {
     SafeERC20,
@@ -15,6 +15,7 @@ import "../interfaces/curve/IStableSwapExchange.sol";
 import "../interfaces/liquity/IPriceFeed.sol";
 import "../interfaces/liquity/IStabilityPool.sol";
 import "../interfaces/uniswap/ISwapRouter.sol";
+import "../interfaces/BaseFee/IBaseFee.sol";
 import "../interfaces/weth/IWETH9.sol";
 
 contract Strategy is BaseStrategy {
@@ -65,6 +66,9 @@ contract Strategy is BaseStrategy {
     // 100%
     uint256 internal constant MAX_BPS = 10000;
 
+    // keeper stuff
+    uint256 public harvestProfitMin; // minimum size that we want to harvest
+    uint256 public harvestProfitMax; // maximum size that we want to harvest
     /***
         Variables for tend() and tendTrigger() to make sure we are actively swapping ETH out
     ***/
@@ -73,7 +77,7 @@ contract Strategy is BaseStrategy {
     bool public tip = false;
     //The max amount of ETH should be in relation to the total value of the strat i.e. 100 == 1%
     uint256 public maxEthPercent;
-    //The max amount of ETH denominated in ETH we will allow the strat to hold
+    //The absolute max amount of ETH we will allow the strat to hold
     uint256 public maxEthAmount;
     //Percent relative to MAX_BPS of the most we will give as a tip in claimEthAndSell() in relation to the claimed ETH up to estimatedCallCost
     uint256 public tipPercent = 100;
@@ -93,11 +97,14 @@ contract Strategy is BaseStrategy {
         daiToLusdFee = 500;
 
         // Allow % slippage by default
-        minExpectedSwapPercentage = 9700;
+        minExpectedSwapPercentage = 9500;
 
+        //Deploy on expectation of ~1m TVL between .1 -1% gain
+        harvestProfitMin = 1_000e18;
+        harvestProfitMax = 10_000e18;
         //Initiall set to 1%
         maxEthPercent = 100;
-        maxEthAmount = 10e18;
+        maxEthAmount = 100e18;
         //Set to max on deploy and updated later if needed to
         maxEthToSell = type(uint256).max;
     }
@@ -172,6 +179,15 @@ contract Strategy is BaseStrategy {
         maxEthToSell = _maxEthToSell;
     }   
 
+    // Min profit to start checking for harvests if gas is good, max will harvest no matter gas.
+    function setHarvestTriggerParams(
+        uint256 _harvestProfitMin,
+        uint256 _harvestProfitMax
+    ) external onlyEmergencyAuthorized {
+        harvestProfitMin = _harvestProfitMin;
+        harvestProfitMax = _harvestProfitMax;
+    }
+
     // Wrapper around `provideToSP` to allow forcing a deposit externally
     // This could be useful to trigger LQTY / ETH transfers without harvesting.
     // `provideToSP` will revert if not enough funds are provided so no need
@@ -217,6 +233,7 @@ contract Strategy is BaseStrategy {
         uint256 totalDebt = vault.strategies(address(this)).totalDebt;
 
         // Claim LQTY/ETH and sell them for more LUSD
+        //This should fail if we can not get enough LUSD due to peg
         _claimRewards();
 
         // At this point all ETH DAI and LQTY has been converted to LUSD
@@ -240,14 +257,15 @@ contract Strategy is BaseStrategy {
 
     function adjustPosition(uint256 _debtOutstanding) internal override {
         //Functions that should only be used during the Tend() call
-        if(tendTrigger(69)){
-            //Sell all available eth. Sends the estmated cost to call tend() as the argument
-            claimAndSellEth(gasleft());
-        }
+        //Sell all available eth. Sends the estmated cost to call tend() as the argument
+        claimAndSellEth(gasleft());
+
         if(DAI.balanceOf(address(this)) > 0) {
             //Try and swap DAI back to LUSD. Only use Curve so we can get an expected amount out to compare before swapping
-            _sellDAIAmountForLUSDonCurve(DAI.balanceOf(address(this)));
+            //This function should not fail even if we cant get enough LUSD at the moment
+            _tryToSellDAIAmountForLUSDonCurve(DAI.balanceOf(address(this)));
         }
+        
 
         // Provide any leftover balance to the stability pool
         // Use zero address for frontend as we are interacting with the contracts directly
@@ -275,18 +293,18 @@ contract Strategy is BaseStrategy {
         // Only need to free the amount of want not readily available
         uint256 amountToWithdraw = _amountNeeded.sub(balance);
 
-        // Cannot withdraw more than what we have in deposit
-        amountToWithdraw = Math.min(
-            amountToWithdraw,
-            stabilityPool.getCompoundedLUSDDeposit(address(this))
-        );
-
-        if (amountToWithdraw > 0) {
+        uint256 stabilityBalance = stabilityPool.getCompoundedLUSDDeposit(address(this));
+        if(amountToWithdraw > stabilityBalance) {
+            //This will cause withdraws to fail if is for more than our LUSD balance while we still have DAI in the strat
+            //This way we do not report incorrect losses before DAI can be swapped back to LUSD
+            require(DAI.balanceOf(address(this)) == 0, "To much DAI");
+            stabilityPool.withdrawFromSP(stabilityBalance);
+        } else {
             stabilityPool.withdrawFromSP(amountToWithdraw);
         }
 
         // After withdrawing from the stability pool it could happen that we have
-        // enough LQTY / ETH / DAI to cover a loss before reporting it.
+        // enough LQTY / ETH to cover a loss before reporting it.
         // However, doing a swap at this point could make withdrawals insecure
         // and front-runnable, so we assume LUSD that cannot be returned is a
         // realized loss.
@@ -310,8 +328,9 @@ contract Strategy is BaseStrategy {
         );
         //Swap any DAI back to LUSD
         //May need to adjust slippage allowed before this depending on peg
-        if (DAI.balanceOf(address(this)) > 0) {
-            _sellDAIforLUSD();
+        uint256 daiB = DAI.balanceOf(address(this));
+        if (daiB > 0) {
+            _sellDAIAmountForLusd(daiB);
         }
 
         return balanceOfWant();
@@ -399,13 +418,15 @@ contract Strategy is BaseStrategy {
         }
 
         // Convert ETH obtained from liquidations to DAI
-        if (address(this).balance > 0) {
-            _sellETHforDAI();
+        uint256 ethB = address(this).balance;
+        if (ethB > 0) {
+            _sellETHforDAI(ethB);
         }
 
         // Convert all outstanding DAI back to LUSD
-        if (DAI.balanceOf(address(this)) > 0) {
-            _sellDAIforLUSD();
+        uint256 daiB = DAI.balanceOf(address(this));
+        if (daiB > 0) {
+            _sellDAIAmountForLusd(daiB);
         }
     }
 
@@ -436,146 +457,9 @@ contract Strategy is BaseStrategy {
         );
     }
 
-    function _sellETHforDAI() internal {
+    function _sellETHforDAI(uint256 ethBalance) internal {
         uint256 ethUSD = priceFeed.fetchPrice();
-        uint256 ethBalance = address(this).balance;
 
-        // Balance * Price * Swap Percentage (adjusted to 18 decimals)
-        uint256 minExpected =
-            ethBalance
-                .mul(ethUSD)
-                .mul(minExpectedSwapPercentage)
-                .div(MAX_BPS)
-                .div(1e18);
-
-        ISwapRouter.ExactInputSingleParams memory params =
-            ISwapRouter.ExactInputSingleParams(
-                address(WETH), // tokenIn
-                address(DAI), // tokenOut
-                ethToDaiFee, // ETH-DAI fee
-                address(this), // recipient
-                now, // deadline
-                ethBalance, // amountIn
-                minExpected, // amountOut
-                0 // sqrtPriceLimitX96
-            );
-
-        router.exactInputSingle{value: address(this).balance}(params);
-        router.refundETH();
-    }
-
-    function _sellDAIforLUSD() internal {
-        // These methods will assume 1 DAI = 1 LUSD and attempt to enforce
-        // min output to be at least minExpectedSwapPercentage of balance
-        if (convertDAItoLUSDonCurve) {
-            _sellDAIforLUSDonCurve();
-        } else {
-            _sellDAIforLUSDonUniswap();
-        }
-    }
-
-    function _sellDAIforLUSDonCurve() internal {
-        uint256 daiBalance = DAI.balanceOf(address(this));
-
-        _checkAllowance(address(curvePool), DAI, daiBalance);
-
-        curvePool.exchange_underlying(
-                1, // from DAI index
-                0, // to LUSD index
-                daiBalance, // amount
-                daiBalance.mul(minExpectedSwapPercentage).div(MAX_BPS) // minDy
-            );
-    }
-
-    function _sellDAIforLUSDonUniswap() internal {
-        uint256 daiBalance = DAI.balanceOf(address(this));
-
-        _checkAllowance(address(router), DAI, daiBalance);
-
-        ISwapRouter.ExactInputSingleParams memory params =
-            ISwapRouter.ExactInputSingleParams(
-                address(DAI), // tokenIn
-                address(want), // tokenOut
-                daiToLusdFee, // DAI-LUSD fee
-                address(this), // recipient
-                now, // deadline
-                daiBalance, // amountIn
-                daiBalance.mul(minExpectedSwapPercentage).div(MAX_BPS), // amountOut
-                0 // sqrtPriceLimitX96
-            );
-        router.exactInputSingle(params);
-    }
-
-    function _swapDaiAmountToLusd(uint256 _amount) internal {
-        
-        if(DAI.balanceOf(address(this)) == 0) return;
-
-        if (convertDAItoLUSDonCurve) {
-            _sellDAIAmountForLUSDonCurve(_amount);
-        } else {
-            _sellDAIAmountForLUSDonUniswap(_amount);
-        }
-    }
-
-    function _sellDAIAmountForLUSDonCurve(uint256 _amount) internal {
-
-        uint256 minOut = _amount.mul(minExpectedSwapPercentage).div(MAX_BPS);
-
-        uint256 actualOut = curvePool.get_dy_underlying(1, 0, _amount);
-
-        if(actualOut >= minOut) {
-        
-            _checkAllowance(address(curvePool), DAI, _amount);
-
-            curvePool.exchange_underlying(
-                1, // from DAI index
-                0, // to LUSD index
-                _amount, // amount
-                minOut // minDy
-            );
-        }
-    }
-
-    function _sellDAIAmountForLUSDonUniswap(uint256 _amount) internal {
-
-        _checkAllowance(address(router), DAI, _amount);
-
-        ISwapRouter.ExactInputSingleParams memory params =
-            ISwapRouter.ExactInputSingleParams(
-                address(DAI), // tokenIn
-                address(want), // tokenOut
-                daiToLusdFee, // DAI-LUSD fee
-                address(this), // recipient
-                now, // deadline
-                _amount, // amountIn
-                _amount.mul(minExpectedSwapPercentage).div(MAX_BPS), // amountOut
-                0 // sqrtPriceLimitX96
-            );
-        router.exactInputSingle(params);
-    }
-
-    //To be called during tend() if needed
-    //Will reimburse the caller the amount to call or a maximum amount if tip == true
-    //If we have an extreme amount of ETH maxEthtoSell can be updated before this call
-    function claimAndSellEth(uint256 estimatedCallCost) internal {
-        if (stabilityPool.getCompoundedLUSDDeposit(address(this)) > 0) {
-            stabilityPool.withdrawFromSP(0);
-        }
-
-        uint256 ethBalance = Math.min(address(this).balance, maxEthToSell);
-        if(ethBalance == 0) return;
-
-        if(tip) {
-            uint256 maxTip = ethBalance.mul(tipPercent).div(MAX_BPS);
-            uint256 toTip = Math.min(maxTip, estimatedCallCost);
-   
-            (bool sent, ) = msg.sender.call{value: toTip}("");
-            require(sent); // dev: could not send ether to governance
-        }
-        //have to reupdate to account for the tip that was sent
-        ethBalance = Math.min(address(this).balance, maxEthToSell);
-        uint256 ethUSD = priceFeed.fetchPrice();
-        
         // Balance * Price * Swap Percentage (adjusted to 18 decimals)
         uint256 minExpected =
             ethBalance
@@ -600,9 +484,95 @@ contract Strategy is BaseStrategy {
         router.refundETH();
     }
 
+    function _sellDAIAmountForLusd(uint256 _amount) internal {
+        
+        require(DAI.balanceOf(address(this)) >= _amount, "Not enough DAI");
+
+        if (convertDAItoLUSDonCurve) {
+            _sellDAIAmountForLUSDonCurve(_amount);
+        } else {
+            _sellDAIAmountForLUSDonUniswap(_amount);
+        }
+    }
+
+    function _sellDAIAmountForLUSDonCurve(uint256 daiBalance) internal {
+
+        _checkAllowance(address(curvePool), DAI, daiBalance);
+
+        curvePool.exchange_underlying(
+                1, // from DAI index
+                0, // to LUSD index
+                daiBalance, // amount
+                daiBalance.mul(minExpectedSwapPercentage).div(MAX_BPS) // minDy
+            );
+    }
+
+    function _sellDAIAmountForLUSDonUniswap(uint256 daiBalance) internal {
+
+        _checkAllowance(address(router), DAI, daiBalance);
+
+        ISwapRouter.ExactInputSingleParams memory params =
+            ISwapRouter.ExactInputSingleParams(
+                address(DAI), // tokenIn
+                address(want), // tokenOut
+                daiToLusdFee, // DAI-LUSD fee
+                address(this), // recipient
+                now, // deadline
+                daiBalance, // amountIn
+                daiBalance.mul(minExpectedSwapPercentage).div(MAX_BPS), // amountOut
+                0 // sqrtPriceLimitX96
+            );
+        router.exactInputSingle(params);
+    }
+    
+    function _tryToSellDAIAmountForLUSDonCurve(uint256 _amount) internal {
+
+        uint256 minOut = _amount.mul(minExpectedSwapPercentage).div(MAX_BPS);
+
+        uint256 actualOut = curvePool.get_dy_underlying(1, 0, _amount);
+
+        if(actualOut >= minOut) {
+        
+            _checkAllowance(address(curvePool), DAI, _amount);
+
+            curvePool.exchange_underlying(
+                1, // from DAI index
+                0, // to LUSD index
+                _amount, // amount
+                minOut // minDy
+            );
+        }
+    }
+
+    //To be called during tend() if needed
+    //Will reimburse the caller the amount to call or a maximum amount if tip == true
+    //If we have an extreme amount of ETH maxEthtoSell can be updated before this call
+    function claimAndSellEth(uint256 estimatedCallCost) internal {
+        if(totalETHBalance() == 0) return;
+
+        if (stabilityPool.getCompoundedLUSDDeposit(address(this)) > 0) {
+            stabilityPool.withdrawFromSP(0);
+        }
+
+        uint256 ethBalance = Math.min(address(this).balance, maxEthToSell);
+        if(ethBalance == 0) return;
+
+        if(tip) {
+            uint256 maxTip = ethBalance.mul(tipPercent).div(MAX_BPS);
+            uint256 toTip = Math.min(maxTip, estimatedCallCost);
+   
+            (bool sent, ) = msg.sender.call{value: toTip}("");
+            require(sent); // dev: could not send ether to governance
+        }
+        //have to reupdate to account for the tip that was sent
+        ethBalance = Math.min(address(this).balance, maxEthToSell);
+        
+        _sellETHforDAI(ethBalance);
+    }
+
     //To be called if we need to swap less than the full amount of DAI to LUSD due to the peg or current liquidity 
-    function swapDaiAmountToLusd(uint256 _amount) external onlyEmergencyAuthorized {
-        _swapDaiAmountToLusd(_amount);
+    function sellDaiAmountToLusd(uint256 _amount) external onlyEmergencyAuthorized {
+        _sellDAIAmountForLusd(_amount);
     }
 
     function tendTrigger(uint256 callCostInWei) public view override returns (bool){
@@ -612,6 +582,9 @@ contract Strategy is BaseStrategy {
 
         if(ethBalance >= maxEthAmount) return true;
 
+        // check if the base fee gas price is higher than we allow. if it is, block harvests.
+        if (callCostInWei > ethBalance / 10) return false;
+
         uint256 ethInWant = ethToWant(ethBalance);
         uint256 maxAllowedEth = totalAssets.mul(maxEthPercent).div(MAX_BPS);
 
@@ -619,5 +592,56 @@ contract Strategy is BaseStrategy {
 
         return false;
     }
+
+    //This expects TendTrigger is keeping up with ETH accumulation
+    function harvestTrigger(uint256 callCostInWei) public view override returns(bool) {
+        // Should not trigger if strategy is not active (no assets and no debtRatio). This means we don't need to adjust keeper job.
+        if (!isActive()) {
+            return false;
+        }
+
+        uint256 assets = estimatedTotalAssets();
+        uint256 debt = vault.strategies(address(this)).totalDebt;
+
+        // harvest if we have a profit to claim at our upper limit without considering gas price
+        uint256 claimableProfit = assets > debt ? assets.sub(debt) : 0;
+
+        //Determines if we would likely be able to swap the expected profit from DAI -> LUSD. Should not harvest if not
+        bool canSwap = curvePool.get_dy_underlying(1, 0, claimableProfit) >= claimableProfit.mul(minExpectedSwapPercentage).div(MAX_BPS);
+
+        if (claimableProfit > harvestProfitMax && canSwap) {
+            return true;
+        }
+
+        // check if the base fee gas price is higher than we allow. if it is, block harvests.
+        if (!isBaseFeeAcceptable()) {
+            return false;
+        }
+
+        // harvest if we have a sufficient profit to claim, but only if our gas price is acceptable
+        if (claimableProfit > harvestProfitMin && canSwap) {
+            return true;
+        }
+
+        StrategyParams memory params = vault.strategies(address(this));
+        // Should not trigger if we haven't waited long enough since previous harvest
+        if (block.timestamp.sub(params.lastReport) < minReportDelay) return false;
+
+        // harvest no matter what once we reach our maxDelay
+        if (block.timestamp.sub(params.lastReport) > maxReportDelay && canSwap) {
+            return true;
+        }
+
+        // otherwise, we don't harvest
+        return false;
+    }
+    
+     // check if the current baseFee is below our external target
+    function isBaseFeeAcceptable() internal view returns (bool) {
+        return
+            IBaseFee(0xb5e1CAcB567d98faaDB60a1fD4820720141f064F)
+                .isCurrentBaseFeeAcceptable();
+    }
+
 
 }

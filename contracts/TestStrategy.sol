@@ -14,11 +14,11 @@ contract TestStrategy is Strategy {
     }
 
     function sellETHforDAI() public {
-        _sellETHforDAI();
+        _sellETHforDAI(address(this).balance);
     }
 
     function sellDAIforLUSD() public {
-        _sellDAIforLUSD();
+        _sellDAIAmountForLusd(DAI.balanceOf(address(this)));
     }
 
     function claimRewards() public {

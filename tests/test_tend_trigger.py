@@ -3,8 +3,9 @@ import pytest
 
 from brownie import chain, reverts, Wei
 
-def test_tend(chain, token, vault, strategy, user, amount, weth, dai, accounts, gov, RELATIVE_APPROX):
+def test_tend(chain, token, vault, strategy, user, amount, weth, dai, accounts, gov, RELATIVE_APPROX, gasOracle):
     # Deposit to the vault
+    assert gasOracle.maxAcceptableBaseFee() == 2000 * 1e9
     user_balance_before = token.balanceOf(user)
     token.approve(vault.address, amount, {"from": user})
     vault.deposit(amount, {"from": user})
@@ -62,7 +63,7 @@ def test_tend_and_harvest(chain, token, vault, strategy, user, strategist, amoun
     before_eth = gov.balance()
     assert strategy.balance() == 1e18
     chain.sleep(1)
-    shouldTend = strategy.tendTrigger(100e18)
+    shouldTend = strategy.tendTrigger(1e17)
     assert shouldTend == True
 
     strategy.tend()
@@ -158,7 +159,7 @@ def test_tend_and_withdraw_no_harvest(chain, token, vault, strategy, user, amoun
     before_eth = gov.balance()
     assert strategy.balance() == 10e18
     chain.sleep(1)
-    shouldTend = strategy.tendTrigger(100e18)
+    shouldTend = strategy.tendTrigger(1e17)
     assert shouldTend == True
 
     strategy.tend()
@@ -188,10 +189,10 @@ def test_manual_sell_dai(
     dai.transfer(strategy.address, amount, {"from": dai_whale})
     assert dai.balanceOf(strategy.address) == amount
 
-    strategy.swapDaiAmountToLusd(amount/2, {"from": strategist})
+    strategy.sellDaiAmountToLusd(amount/2, {"from": strategist})
     assert dai.balanceOf(strategy.address) <= amount /2
 
-    strategy.swapDaiAmountToLusd(dai.balanceOf(strategy.address), {"from": strategist})
+    strategy.sellDaiAmountToLusd(dai.balanceOf(strategy.address), {"from": strategist})
     #may be a slight amount left due to calculations
     assert dai.balanceOf(strategy.address) < amount/10
 
@@ -215,7 +216,7 @@ def test_max_eth_sell(
 
     assert strategy.balance() == 10e18
     chain.sleep(1)
-    shouldTend = strategy.tendTrigger(100e18)
+    shouldTend = strategy.tendTrigger(1)
     assert shouldTend == True
 
     strategy.tend()
@@ -254,12 +255,15 @@ def test_change_max_percent_and_amount(
     strategy.setTendAmounts(strategy.maxEthPercent(), 1e16, strategy.tipPercent(), strategy.maxEthToSell())
     chain.sleep(1)
 
-    assert strategy.tendTrigger(100e18) == True
+    assert strategy.tendTrigger(1) == True
 
     strategy.setTendAmounts(strategy.maxEthPercent(), 100e18, strategy.tipPercent(), strategy.maxEthToSell())
     chain.sleep(1)
-    assert strategy.tendTrigger(578) == False
+    assert strategy.tendTrigger(1) == False
 
     strategy.setTendAmounts(1, strategy.maxEthAmount(), strategy.tipPercent(), strategy.maxEthToSell())
     chain.sleep(1)
-    assert strategy.tendTrigger(578) == True
+    assert strategy.tendTrigger(1) == True
+
+    chain.sleep(1)
+    assert strategy.tendTrigger(1e18) == False

@@ -180,7 +180,7 @@ def test_dai_to_lusd_swap_on_uniswap_with_no_slippage_reverts(
     dai.transfer(test_strategy, 1_000 * (10 ** dai.decimals()), {"from": dai_whale})
 
     with reverts():
-        test_strategy.sellDAIforLUSD()
+        test_strategy.sellDaiAmountToLusd(dai.balanceOf(test_strategy.address))
 
 
 def test_dai_to_lusd_swap_on_uniswap(test_strategy, dai, dai_whale, lusd):

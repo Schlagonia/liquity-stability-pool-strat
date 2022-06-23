@@ -99,6 +99,15 @@ def weth():
     token_address = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
     yield Contract(token_address)
 
+@pytest.fixture
+def gasOracle():
+    yield Contract("0xb5e1CAcB567d98faaDB60a1fD4820720141f064F")
+
+@pytest.fixture
+def strategist_ms(accounts):
+        # like governance, but better
+    yield accounts.at("0x16388463d60FFE0661Cf7F1f31a7D658aC790ff7", force=True)
+    
 """
 @pytest.fixture
 def weth_amout(user, weth):
@@ -118,11 +127,15 @@ def vault(pm, gov, rewards, guardian, management, token):
 
 
 @pytest.fixture
-def strategy(strategist, keeper, vault, Strategy, gov):
+def strategy(strategist, keeper, vault, Strategy, gov, gasOracle, strategist_ms):
     strategy = strategist.deploy(Strategy, vault)
     strategy.setKeeper(keeper)
     strategy.setDoHealthCheck(True, {"from": gov})
-    vault.addStrategy(strategy, 10_000, 0, 2 ** 256 - 1, 1_000, {"from": gov})
+    vault.addStrategy(strategy, 10_000, 0, 2 ** 256 - 1, 1_000, {"from": gov})  
+
+    # make all harvests permissive unless we change the value lower
+    gasOracle.setMaxAcceptableBaseFee(2000 * 1e9, {"from": strategist_ms})
+
     yield strategy
 
 

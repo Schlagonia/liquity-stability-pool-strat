@@ -72,6 +72,8 @@ contract Strategy is BaseStrategy {
     /***
         Variables for tend() and tendTrigger() to make sure we are actively swapping ETH out
     ***/
+    //Max base fee acceptable for tend. Will be higher than a harvest max due to potential for elevated gas but still want to check extreme scenarios
+    uint256 public maxTendBaseFee;
     //Bool repersenting whether or not we should tip the keeper calling tend()
     //Will likely only need to be set during high volatility due to many subsequent tend() calls 
     bool public tip = false;
@@ -102,6 +104,9 @@ contract Strategy is BaseStrategy {
         //Deploy on expectation of ~1m TVL between .1 -1% gain
         harvestProfitMin = 1_000e18;
         harvestProfitMax = 10_000e18;
+
+        maxTendBaseFee = 300e9;
+
         //Initiall set to 1%
         maxEthPercent = 100;
         maxEthAmount = 100e18;
@@ -169,7 +174,8 @@ contract Strategy is BaseStrategy {
         uint256 _maxEthPercent,
         uint256 _maxEthAmount,
         uint256 _tipPercent,
-        uint256 _maxEthToSell
+        uint256 _maxEthToSell,
+        uint256 _maxTendBaseFee
     ) external onlyEmergencyAuthorized {
         require(_maxEthPercent <= MAX_BPS && _tipPercent < MAX_BPS, "Too Many Bips");
         require(_maxEthToSell > 0, "Can't be 0");
@@ -177,6 +183,7 @@ contract Strategy is BaseStrategy {
         maxEthAmount = _maxEthAmount;
         tipPercent = _tipPercent;
         maxEthToSell = _maxEthToSell;
+        maxTendBaseFee = _maxTendBaseFee;
     }   
 
     // Min profit to start checking for harvests if gas is good, max will harvest no matter gas.
@@ -258,12 +265,14 @@ contract Strategy is BaseStrategy {
     function adjustPosition(uint256 _debtOutstanding) internal override {
         //Functions that should only be used during the Tend() call
         //Sell all available eth. Sends the estmated cost to call tend() as the argument
-        claimAndSellEth(gasleft());
+        if(totalETHBalance() > 0) {
+           claimAndSellEth(gasleft());
+        }
 
         if(DAI.balanceOf(address(this)) > 0) {
             //Try and swap DAI back to LUSD. Only use Curve so we can get an expected amount out to compare before swapping
             //This function should not fail even if we cant get enough LUSD at the moment
-            _tryToSellDAIAmountForLUSDonCurve(DAI.balanceOf(address(this)));
+            _tryToSellDAIAmountForLUSDonCurve();
         }
         
 
@@ -527,7 +536,8 @@ contract Strategy is BaseStrategy {
     
     //Function only called during tend() that will not send the tx unless we believe it will go through
     //This allows us to only sell the DAI if we can get enough out without the whole tx failing
-    function _tryToSellDAIAmountForLUSDonCurve(uint256 _amount) internal {
+    function _tryToSellDAIAmountForLUSDonCurve() internal {
+        uint256 _amount =  DAI.balanceOf(address(this));
 
         uint256 minOut = _amount.mul(minExpectedSwapPercentage).div(MAX_BPS);
 
@@ -550,9 +560,6 @@ contract Strategy is BaseStrategy {
     //Will reimburse the caller the amount to call or a maximum amount if tip == true
     //If we have an extreme amount of ETH maxEthtoSell can be updated before this call
     function claimAndSellEth(uint256 estimatedCallCost) internal {
-        //First check so we do not continue during a harvest
-        if(totalETHBalance() == 0) return;
-
         if (stabilityPool.getCompoundedLUSDDeposit(address(this)) > 0) {
             stabilityPool.withdrawFromSP(0);
         }
@@ -583,6 +590,8 @@ contract Strategy is BaseStrategy {
         uint256 totalAssets = estimatedTotalAssets();
         uint256 ethBalance = totalETHBalance();
         if(ethBalance == 0) return false;
+
+        if(getBaseFee() > maxTendBaseFee) return false;
 
         if(ethBalance >= maxEthAmount) return true;
 
@@ -652,5 +661,18 @@ contract Strategy is BaseStrategy {
                 .isCurrentBaseFeeAcceptable();
     }
 
+    function getBaseFee() internal view returns (uint256) {
+        uint256 baseFee;
+        try IBaseFeeOracle(0xf8d0Ec04e94296773cE20eFbeeA82e76220cD549)
+                .basefee_global() returns (uint256 currentBaseFee) {
+            baseFee = currentBaseFee;
+        } catch {
+            // Useful for testing until ganache supports london fork
+            // Hard-code current base fee to 1000 gwei
+            // This should also help keepers that run in a fork without
+            // baseFee() to avoid reverting and potentially abandoning the job
+            baseFee = 1000 gwei;
+        }
+    }
 
 }

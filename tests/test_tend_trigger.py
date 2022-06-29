@@ -4,6 +4,8 @@ import pytest
 from brownie import chain, reverts, Wei
 
 def test_tend(chain, token, vault, strategy, user, amount, weth, dai, accounts, gov, RELATIVE_APPROX, gasOracle):
+    #need to adjust maxTendBaseFee for a forked enviorment
+    strategy.setTendAmounts(strategy.maxEthPercent(), strategy.maxEthAmount(), strategy.tipPercent(), strategy.maxEthToSell(), 1001e9)
     # Deposit to the vault
     assert gasOracle.maxAcceptableBaseFee() == 2000 * 1e9
     user_balance_before = token.balanceOf(user)
@@ -47,6 +49,8 @@ def test_tend(chain, token, vault, strategy, user, amount, weth, dai, accounts, 
 
 
 def test_tend_and_harvest(chain, token, vault, strategy, user, strategist, amount, weth, dai, accounts, keeper, gov, RELATIVE_APPROX):
+    #need to adjust maxTendBaseFee for a forked enviorment
+    strategy.setTendAmounts(strategy.maxEthPercent(), strategy.maxEthAmount(), strategy.tipPercent(), strategy.maxEthToSell(), 1001e9)
     # Deposit to the vault
    
     user_balance_before = token.balanceOf(user)
@@ -89,6 +93,8 @@ def test_tend_and_harvest(chain, token, vault, strategy, user, strategist, amoun
 def test_tip_change(
     chain, token, vault, strategy, user, strategist, amount, weth, dai, accounts, gov, keeper, RELATIVE_APPROX
 ):
+    #need to adjust maxTendBaseFee for a forked enviorment
+    strategy.setTendAmounts(strategy.maxEthPercent(), strategy.maxEthAmount(), strategy.tipPercent(), strategy.maxEthToSell(), 1001e9)
     # Deposit to the vault
     user_balance_before = user.balance()
     token.approve(vault.address, amount, {"from": user})
@@ -129,7 +135,7 @@ def test_tip_change(
     # A tip should have been sent making the amount gained slightly less
     assert diff > assets3 - assets2
 
-    strategy.setTendAmounts(strategy.maxEthPercent(), strategy.maxEthAmount(), 10, strategy.maxEthToSell())
+    strategy.setTendAmounts(strategy.maxEthPercent(), strategy.maxEthAmount(), 10, strategy.maxEthToSell(), strategy.maxTendBaseFee())
     accounts.at(weth, force=True).transfer(strategy, Wei("10 ether"))
     assert strategy.balance() == 10e18
 
@@ -140,10 +146,12 @@ def test_tip_change(
     #Tip was sent both times but the second one should be smaller
     assert assets3 - assets2 > strategy.estimatedTotalAssets() - assets3
     with reverts():
-        strategy.setTendAmounts(strategy.maxEthPercent(), strategy.maxEthAmount(), 10001, strategy.maxEthToSell())
+        strategy.setTendAmounts(strategy.maxEthPercent(), strategy.maxEthAmount(), 10001, strategy.maxEthToSell(), strategy.maxTendBaseFee())
 
 
 def test_tend_and_withdraw_no_harvest(chain, token, vault, strategy, user, amount, weth, dai, accounts, gov, RELATIVE_APPROX):
+    #need to adjust maxTendBaseFee for a forked enviorment
+    strategy.setTendAmounts(strategy.maxEthPercent(), strategy.maxEthAmount(), strategy.tipPercent(), strategy.maxEthToSell(), 1001e9)
     # Deposit to the vault
     user_balance_before = token.balanceOf(user)
     token.approve(vault.address, amount, {"from": user})
@@ -199,6 +207,8 @@ def test_manual_sell_dai(
 def test_max_eth_sell(
     chain, token, vault, strategy, strategist, user, amount, weth, dai, dai_whale, accounts, gov, RELATIVE_APPROX
 ):
+    #need to adjust maxTendBaseFee for a forked enviorment
+    strategy.setTendAmounts(strategy.maxEthPercent(), strategy.maxEthAmount(), strategy.tipPercent(), strategy.maxEthToSell(), 1001e9)
     # Deposit to the vault
     user_balance_before = token.balanceOf(user)
     token.approve(vault.address, amount, {"from": user})
@@ -211,7 +221,7 @@ def test_max_eth_sell(
     assert pytest.approx(strategy.estimatedTotalAssets(), rel=RELATIVE_APPROX) == amount
     chain.sleep(1)
 
-    strategy.setTendAmounts(strategy.maxEthPercent(), strategy.maxEthAmount(), strategy.tipPercent(), 5e18)
+    strategy.setTendAmounts(strategy.maxEthPercent(), strategy.maxEthAmount(), strategy.tipPercent(), 5e18, strategy.maxTendBaseFee())
     accounts.at(weth, force=True).transfer(strategy, Wei("10 ether"))
 
     assert strategy.balance() == 10e18
@@ -233,6 +243,8 @@ def test_max_eth_sell(
 def test_change_max_percent_and_amount(
     chain, token, vault, strategy, strategist, user, amount, weth, dai, dai_whale, accounts, gov, RELATIVE_APPROX
 ):
+    #need to adjust maxTendBaseFee for a forked enviorment
+    strategy.setTendAmounts(strategy.maxEthPercent(), strategy.maxEthAmount(), strategy.tipPercent(), strategy.maxEthToSell(), 1001e9)
     # Deposit to the vault
     #amount = 100_000 * (10 ** token.decimals())
     user_balance_before = token.balanceOf(user)
@@ -252,18 +264,19 @@ def test_change_max_percent_and_amount(
     assert strategy.balance() == 1e16
     assert strategy.tendTrigger(100) == False
 
-    strategy.setTendAmounts(strategy.maxEthPercent(), 1e16, strategy.tipPercent(), strategy.maxEthToSell())
+    strategy.setTendAmounts(strategy.maxEthPercent(), 1e16, strategy.tipPercent(), strategy.maxEthToSell(), strategy.maxTendBaseFee())
     chain.sleep(1)
 
     assert strategy.tendTrigger(1) == True
 
-    strategy.setTendAmounts(strategy.maxEthPercent(), 100e18, strategy.tipPercent(), strategy.maxEthToSell())
+    strategy.setTendAmounts(strategy.maxEthPercent(), 100e18, strategy.tipPercent(), strategy.maxEthToSell(), strategy.maxTendBaseFee())
     chain.sleep(1)
     assert strategy.tendTrigger(1) == False
 
-    strategy.setTendAmounts(1, strategy.maxEthAmount(), strategy.tipPercent(), strategy.maxEthToSell())
+    strategy.setTendAmounts(1, strategy.maxEthAmount(), strategy.tipPercent(), strategy.maxEthToSell(), strategy.maxTendBaseFee())
     chain.sleep(1)
     assert strategy.tendTrigger(1) == True
 
     chain.sleep(1)
     assert strategy.tendTrigger(1e18) == False
+

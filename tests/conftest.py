@@ -81,7 +81,7 @@ def dai():
 
 @pytest.fixture
 def dai_whale(accounts):
-    yield accounts.at("0x5D38B4e4783E34e2301A2a36c39a03c45798C4dD", force=True)
+    yield accounts.at("0x2FAF487A4414Fe77e2327F0bf4AE2a264a776AD2", force=True)
 
 
 @pytest.fixture

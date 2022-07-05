@@ -74,15 +74,10 @@ contract Strategy is BaseStrategy {
     ***/
     //Max base fee acceptable for tend. Will be higher than a harvest max due to potential for elevated gas but still want to check extreme scenarios
     uint256 public maxTendBaseFee;
-    //Bool repersenting whether or not we should tip the keeper calling tend()
-    //Will likely only need to be set during high volatility due to many subsequent tend() calls 
-    bool public tip = false;
     //The max amount of ETH should be in relation to the total value of the strat i.e. 100 == 1%
     uint256 public maxEthPercent;
     //The absolute max amount of ETH we will allow the strat to hold
     uint256 public maxEthAmount;
-    //Percent relative to MAX_BPS of the most we will give as a tip in claimEthAndSell() in relation to the claimed ETH up to estimatedCallCost
-    uint256 public tipPercent = 100;
     //Max eth to sell in one transaction through calimEthAndSell()
     uint256 public maxEthToSell;
 
@@ -163,25 +158,17 @@ contract Strategy is BaseStrategy {
         minExpectedSwapPercentage = _minExpectedSwapPercentage;
     }
 
-    //To update whether or not we should tip the keeper when calling tend()
-    //Allows for many calls to be economical during volatile periods with a large amount of liquidations
-    function setToTip(bool _tip) external onlyEmergencyAuthorized {
-        tip = _tip;
-    }
-
     //Change tend triggers and variables based on market conditions
     function setTendAmounts(
         uint256 _maxEthPercent,
         uint256 _maxEthAmount,
-        uint256 _tipPercent,
         uint256 _maxEthToSell,
         uint256 _maxTendBaseFee
     ) external onlyEmergencyAuthorized {
-        require(_maxEthPercent <= MAX_BPS && _tipPercent < MAX_BPS, "Too Many Bips");
+        require(_maxEthPercent <= MAX_BPS, "Too Many Bips");
         require(_maxEthToSell > 0, "Can't be 0");
         maxEthPercent = _maxEthPercent;
         maxEthAmount = _maxEthAmount;
-        tipPercent = _tipPercent;
         maxEthToSell = _maxEthToSell;
         maxTendBaseFee = _maxTendBaseFee;
     }   
@@ -264,9 +251,9 @@ contract Strategy is BaseStrategy {
 
     function adjustPosition(uint256 _debtOutstanding) internal override {
         //Functions that should only be used during the Tend() call
-        //Sell all available eth. Sends the estmated cost to call tend() as the argument
+        //Sell all available eth.
         if(totalETHBalance() > 0) {
-           claimAndSellEth(gasleft());
+           claimAndSellEth();
         }
 
         if(DAI.balanceOf(address(this)) > 0) {
@@ -557,27 +544,16 @@ contract Strategy is BaseStrategy {
     }
 
     //To be called during tend() if needed
-    //Will reimburse the caller the amount to call or a maximum amount if tip == true
     //If we have an extreme amount of ETH maxEthtoSell can be updated before this call
-    function claimAndSellEth(uint256 estimatedCallCost) internal {
+    function claimAndSellEth() internal {
         if (stabilityPool.getCompoundedLUSDDeposit(address(this)) > 0) {
             stabilityPool.withdrawFromSP(0);
         }
 
         uint256 ethBalance = Math.min(address(this).balance, maxEthToSell);
-        //Second check to make sure we actually claimed eth
+        //check to make sure we actually claimed eth
         if(ethBalance == 0) return;
 
-        if(tip) {
-            uint256 maxTip = ethBalance.mul(tipPercent).div(MAX_BPS);
-            uint256 toTip = Math.min(maxTip, estimatedCallCost);
-   
-            (bool sent, ) = msg.sender.call{value: toTip}("");
-            require(sent); // dev: could not send ether to governance
-        }
-        //have to reupdate to account for the tip that was sent
-        ethBalance = Math.min(address(this).balance, maxEthToSell);
-        
         _sellETHforDAI(ethBalance);
     }
 
@@ -589,6 +565,7 @@ contract Strategy is BaseStrategy {
     function tendTrigger(uint256 callCostInWei) public view override returns (bool){
         uint256 totalAssets = estimatedTotalAssets();
         uint256 ethBalance = totalETHBalance();
+
         if(ethBalance == 0) return false;
 
         if(getBaseFee() > maxTendBaseFee) return false;

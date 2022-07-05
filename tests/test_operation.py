@@ -255,3 +255,56 @@ def test_loss_in_lusd_but_ends_in_profit_because_lqty_rewards_are_higher(
     assert vault.totalAssets() > amount
     assert vault.strategies(strategy).dict()["totalLoss"] == 0
     assert vault.strategies(strategy).dict()["totalGain"] > 0
+
+
+def test_harvest_fails_due_to_peg(
+    chain,
+    accounts,
+    weth,
+    token,
+    vault,
+    strategy,
+    user,
+    gov,
+    amount,
+    lqty,
+    lqty_whale,
+    RELATIVE_APPROX,
+):
+    # Deposit to the vault
+    token.approve(vault.address, amount, {"from": user})
+    vault.deposit(amount, {"from": user})
+    assert token.balanceOf(vault.address) == amount
+
+    # Harvest 1: Send funds through the strategy
+    chain.sleep(1)
+    strategy.harvest()
+    assert pytest.approx(strategy.estimatedTotalAssets(), rel=RELATIVE_APPROX) == amount
+    # Turn off health check to be able to claim larger profit
+    strategy.setDoHealthCheck(False, {"from": gov})
+
+    # Simulate making money
+    accounts.at(weth, force=True).transfer(strategy, Wei("1 ether"))
+    # Harvest 2: revert due to slippage
+    chain.sleep(1)
+    # Set Min Expected swap higher than we can get to simulate depeg
+    strategy.setMinExpectedSwapPercentage(10050)
+    chain.sleep(1)
+    with reverts():
+        strategy.harvest()
+
+    # Reduce slippage to now allow good harvest
+    strategy.setMinExpectedSwapPercentage(9500)
+    # Simulate profit
+    before_pps = vault.pricePerShare()
+
+    # Harvest 3: Realize profit
+    chain.sleep(1)
+    strategy.harvest()
+    chain.sleep(3600 * 6)  # 6 hrs needed for profits to unlock
+    chain.mine(1)
+    profit = token.balanceOf(vault.address)  # Profits go to vault
+
+    assert strategy.estimatedTotalAssets() + profit > amount
+    assert vault.pricePerShare() > before_pps
+    assert vault.totalAssets() > amount

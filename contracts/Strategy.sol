@@ -74,15 +74,10 @@ contract Strategy is BaseStrategy {
     ***/
     //Max base fee acceptable for tend. Will be higher than a harvest max due to potential for elevated gas but still want to check extreme scenarios
     uint256 public maxTendBaseFee;
-    //Bool repersenting whether or not we should tip the keeper calling tend()
-    //Will likely only need to be set during high volatility due to many subsequent tend() calls 
-    bool public tip = false;
     //The max amount of ETH should be in relation to the total value of the strat i.e. 100 == 1%
     uint256 public maxEthPercent;
     //The absolute max amount of ETH we will allow the strat to hold
     uint256 public maxEthAmount;
-    //Percent relative to MAX_BPS of the most we will give as a tip in claimEthAndSell() in relation to the claimed ETH up to estimatedCallCost
-    uint256 public tipPercent = 100;
     //Max eth to sell in one transaction through calimEthAndSell()
     uint256 public maxEthToSell;
 
@@ -163,25 +158,17 @@ contract Strategy is BaseStrategy {
         minExpectedSwapPercentage = _minExpectedSwapPercentage;
     }
 
-    //To update whether or not we should tip the keeper when calling tend()
-    //Allows for many calls to be economical during volatile periods with a large amount of liquidations
-    function setToTip(bool _tip) external onlyEmergencyAuthorized {
-        tip = _tip;
-    }
-
     //Change tend triggers and variables based on market conditions
     function setTendAmounts(
         uint256 _maxEthPercent,
         uint256 _maxEthAmount,
-        uint256 _tipPercent,
         uint256 _maxEthToSell,
         uint256 _maxTendBaseFee
     ) external onlyEmergencyAuthorized {
-        require(_maxEthPercent <= MAX_BPS && _tipPercent < MAX_BPS, "Too Many Bips");
+        require(_maxEthPercent <= MAX_BPS, "Too Many Bips");
         require(_maxEthToSell > 0, "Can't be 0");
         maxEthPercent = _maxEthPercent;
         maxEthAmount = _maxEthAmount;
-        tipPercent = _tipPercent;
         maxEthToSell = _maxEthToSell;
         maxTendBaseFee = _maxTendBaseFee;
     }   
@@ -218,11 +205,13 @@ contract Strategy is BaseStrategy {
         return "StrategyLiquityStabilityPoolLUSD";
     }
 
-    //This treats 1 DAI = 1 LUSD which may not be true and should not be used for any real accounting
     function estimatedTotalAssets() public view override returns (uint256) {
         // 1 LUSD = 1 USD *guaranteed* (TM)
+        uint256 daiBalance = DAI.balanceOf(address(this));
+        uint256 daiToWant = daiBalance > 0 ? curvePool.get_dy_underlying(1, 0, daiBalance) : 0;
+
         return
-            totalLUSDBalance().add(DAI.balanceOf(address(this))).add(
+            totalLUSDBalance().add(daiToWant).add(
                 totalETHBalance().mul(priceFeed.lastGoodPrice()).div(1e18)
             );
     }
@@ -240,7 +229,7 @@ contract Strategy is BaseStrategy {
         uint256 totalDebt = vault.strategies(address(this)).totalDebt;
 
         // Claim LQTY/ETH and sell them for more LUSD
-        //This should fail if we can not get enough LUSD due to peg
+        //This should fail if we can not get enough LUSD due to peg based on slippage tolerance
         _claimRewards();
 
         // At this point all ETH DAI and LQTY has been converted to LUSD
@@ -264,15 +253,15 @@ contract Strategy is BaseStrategy {
 
     function adjustPosition(uint256 _debtOutstanding) internal override {
         //Functions that should only be used during the Tend() call
-        //Sell all available eth. Sends the estmated cost to call tend() as the argument
+        //Sell all available eth.
         if(totalETHBalance() > 0) {
-           claimAndSellEth(gasleft());
+           claimAndSellEth();
         }
 
         if(DAI.balanceOf(address(this)) > 0) {
             //Try and swap DAI back to LUSD. Only use Curve so we can get an expected amount out to compare before swapping
-            //This function should not fail even if we cant get enough LUSD at the moment
-            _tryToSellDAIAmountForLUSDonCurve();
+            //This function should NOT fail even if we can't get enough LUSD at the moment to assure the ETH -> DAI swap still goes through
+            _tryToSellDAIForLUSDonCurve();
         }
         
 
@@ -337,9 +326,9 @@ contract Strategy is BaseStrategy {
         );
         //Swap any DAI back to LUSD
         //May need to adjust slippage allowed before this depending on peg
-        uint256 daiB = DAI.balanceOf(address(this));
-        if (daiB > 0) {
-            _sellDAIAmountForLusd(daiB);
+        uint256 daiBalance = DAI.balanceOf(address(this));
+        if (daiBalance > 0) {
+            _sellDAIAmountForLusd(daiBalance);
         }
 
         return balanceOfWant();
@@ -427,15 +416,15 @@ contract Strategy is BaseStrategy {
         }
 
         // Convert ETH obtained from liquidations to DAI
-        uint256 ethB = address(this).balance;
-        if (ethB > 0) {
-            _sellETHforDAI(ethB);
+        uint256 ethBalance = address(this).balance;
+        if (ethBalance > 0) {
+            _sellETHforDAI(ethBalance);
         }
 
         // Convert all outstanding DAI back to LUSD
-        uint256 daiB = DAI.balanceOf(address(this));
-        if (daiB > 0) {
-            _sellDAIAmountForLusd(daiB);
+        uint256 daiBalance = DAI.balanceOf(address(this));
+        if (daiBalance > 0) {
+            _sellDAIAmountForLusd(daiBalance);
         }
     }
 
@@ -534,9 +523,10 @@ contract Strategy is BaseStrategy {
         router.exactInputSingle(params);
     }
     
-    //Function only called during tend() that will not send the tx unless we believe it will go through
-    //This allows us to only sell the DAI if we can get enough out without the whole tx failing
-    function _tryToSellDAIAmountForLUSDonCurve() internal {
+    //Function only called during tend() and it will not send the tx unless we believe it will go through
+    //This allows us to only sell the DAI if we know it can get enough out without the whole tx failing based on our slippage tollerance
+    //Meaning we can still succefully claim and sell ETH -> DAI even if we currently cant go from DAI -> LUSD
+    function _tryToSellDAIForLUSDonCurve() internal {
         uint256 _amount =  DAI.balanceOf(address(this));
 
         uint256 minOut = _amount.mul(minExpectedSwapPercentage).div(MAX_BPS);
@@ -557,27 +547,16 @@ contract Strategy is BaseStrategy {
     }
 
     //To be called during tend() if needed
-    //Will reimburse the caller the amount to call or a maximum amount if tip == true
     //If we have an extreme amount of ETH maxEthtoSell can be updated before this call
-    function claimAndSellEth(uint256 estimatedCallCost) internal {
+    function claimAndSellEth() internal {
         if (stabilityPool.getCompoundedLUSDDeposit(address(this)) > 0) {
             stabilityPool.withdrawFromSP(0);
         }
 
         uint256 ethBalance = Math.min(address(this).balance, maxEthToSell);
-        //Second check to make sure we actually claimed eth
+        //check to make sure we actually claimed eth
         if(ethBalance == 0) return;
 
-        if(tip) {
-            uint256 maxTip = ethBalance.mul(tipPercent).div(MAX_BPS);
-            uint256 toTip = Math.min(maxTip, estimatedCallCost);
-   
-            (bool sent, ) = msg.sender.call{value: toTip}("");
-            require(sent); // dev: could not send ether to governance
-        }
-        //have to reupdate to account for the tip that was sent
-        ethBalance = Math.min(address(this).balance, maxEthToSell);
-        
         _sellETHforDAI(ethBalance);
     }
 
@@ -589,6 +568,7 @@ contract Strategy is BaseStrategy {
     function tendTrigger(uint256 callCostInWei) public view override returns (bool){
         uint256 totalAssets = estimatedTotalAssets();
         uint256 ethBalance = totalETHBalance();
+
         if(ethBalance == 0) return false;
 
         if(getBaseFee() > maxTendBaseFee) return false;
@@ -617,16 +597,17 @@ contract Strategy is BaseStrategy {
         uint256 assets = estimatedTotalAssets();
         uint256 debt = params.totalDebt;
 
-        // harvest if we have a profit to claim at our upper limit without considering gas price
-        uint256 claimableProfit = assets > debt ? assets.sub(debt) : 0;
-
-        //Determines if we would likely be able to swap the expected profit from DAI -> LUSD. Should not harvest if not
-        //Make sure there is a profit above 1 to avaid errors with curve call
-        if(claimableProfit > 1) {
-            if(curvePool.get_dy_underlying(1, 0, claimableProfit) < claimableProfit.mul(minExpectedSwapPercentage).div(MAX_BPS)) {
+        //Determines if we would likely be able to swap the current non LUSD balance from DAI -> LUSD. Should not harvest if not
+        //Make sure the amount to swap is above 1 to avaid errors with curve call
+        uint256 needToSwap = assets.sub(totalLUSDBalance());
+        if(needToSwap > 0) {
+            if(curvePool.get_dy_underlying(1, 0, needToSwap) < needToSwap.mul(minExpectedSwapPercentage).div(MAX_BPS)) {
                 return false;
             }
         }
+
+        // harvest if we have a profit to claim at our upper limit without considering gas price
+        uint256 claimableProfit = assets > debt ? assets.sub(debt) : 0;
 
         if (claimableProfit > harvestProfitMax) {
             return true;

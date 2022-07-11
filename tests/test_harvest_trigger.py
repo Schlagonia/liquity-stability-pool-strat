@@ -57,7 +57,7 @@ def test_triggers(
     accounts.at(weth, force=True).transfer(strategy, Wei("1 ether"))
 
     # update our minProfit so our harvest triggers true
-    strategy.setHarvestTriggerParams(1e6, 1000000e18, {"from": gov})
+    strategy.setHarvestTriggerMin(1e6, {"from": gov})
     tx = strategy.harvestTrigger(100)
     print("\nShould we harvest? Should be true.", tx)
     assert tx == True
@@ -69,11 +69,13 @@ def test_triggers(
 
     strategy.setMinExpectedSwapPercentage(9500)
     
-    # update our maxProfit so harvest triggers true
-    strategy.setHarvestTriggerParams(1000000e6, 1e6, {"from": gov})
+    # update our min Profit so harvest triggers false
+    strategy.setHarvestTriggerMin(1000000e18, {"from": gov})
     tx = strategy.harvestTrigger(1e18)
-    print("\nShould we harvest? Should be true.", tx)
-    assert tx == True
+    print("\nShould we harvest? Should be false.", tx)
+    assert tx == False
+
+    strategy.setHarvestTriggerMin(1_000e18, {"from": gov})
 
     #Turn off health check because profit will be higher than allowed
     strategy.setDoHealthCheck(False, {"from": gov})

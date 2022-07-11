@@ -68,7 +68,7 @@ contract Strategy is BaseStrategy {
 
     // keeper stuff
     uint256 public harvestProfitMin; // minimum size that we want to harvest
-    uint256 public harvestProfitMax; // maximum size that we want to harvest
+
     /***
         Variables for tend() and tendTrigger() to make sure we are actively swapping ETH out
     ***/
@@ -96,9 +96,8 @@ contract Strategy is BaseStrategy {
         // Allow % slippage by default
         minExpectedSwapPercentage = 9500;
 
-        //Deploy on expectation of ~1m TVL between .1 -1% gain
+        //Deploy on expectation of ~1m TVL ~ .1% gain
         harvestProfitMin = 1_000e18;
-        harvestProfitMax = 10_000e18;
 
         maxTendBaseFee = 300e9;
 
@@ -173,13 +172,11 @@ contract Strategy is BaseStrategy {
         maxTendBaseFee = _maxTendBaseFee;
     }   
 
-    // Min profit to start checking for harvests if gas is good, max will harvest no matter gas.
-    function setHarvestTriggerParams(
-        uint256 _harvestProfitMin,
-        uint256 _harvestProfitMax
+    // Min profit to start checking for harvests if gas is good
+    function setHarvestTriggerMin(
+        uint256 _harvestProfitMin
     ) external onlyEmergencyAuthorized {
         harvestProfitMin = _harvestProfitMin;
-        harvestProfitMax = _harvestProfitMax;
     }
 
     // Wrapper around `provideToSP` to allow forcing a deposit externally
@@ -575,7 +572,7 @@ contract Strategy is BaseStrategy {
 
         if(ethBalance >= maxEthAmount) return true;
 
-        // check if the gas cost is higher than we allow. if it is, block tend.
+        // check if the gas cost is higher than 10% of ethBalance. if it is, block tend.
         if (callCostInWei > ethBalance / 10) return false;
 
         uint256 ethInWant = ethToWant(ethBalance);
@@ -606,17 +603,13 @@ contract Strategy is BaseStrategy {
             }
         }
 
-        // harvest if we have a profit to claim at our upper limit without considering gas price
-        uint256 claimableProfit = assets > debt ? assets.sub(debt) : 0;
-
-        if (claimableProfit > harvestProfitMax) {
-            return true;
-        }
-
         // check if the base fee gas price is higher than we allow. if it is, block harvests.
         if (!isBaseFeeAcceptable()) {
             return false;
         }
+
+        // harvest if we have a profit to claim at our upper limit without considering gas price
+        uint256 claimableProfit = assets > debt ? assets.sub(debt) : 0;
 
         // harvest if we have a sufficient profit to claim, but only if our gas price is acceptable
         if (claimableProfit > harvestProfitMin) {

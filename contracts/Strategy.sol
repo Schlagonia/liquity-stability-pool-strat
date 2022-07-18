@@ -72,7 +72,8 @@ contract Strategy is BaseStrategy {
     /***
         Variables for tend() and tendTrigger() to make sure we are actively swapping ETH out
     ***/
-    //Max base fee acceptable for tend. Will be higher than a harvest max due to potential for elevated gas but still want to check extreme scenarios
+    //Max base fee acceptable for tend. Will be higher than a harvest max due to potential for elevated gas 
+    //  during volatile periods when this is most needed, but still want to check extreme scenarios
     uint256 public maxTendBaseFee;
     //The max amount of ETH should be in relation to the total value of the strat i.e. 100 == 1%
     uint256 public maxEthPercent;
@@ -94,12 +95,12 @@ contract Strategy is BaseStrategy {
         daiToLusdFee = 500;
 
         // Allow % slippage by default
-        minExpectedSwapPercentage = 9500;
+        minExpectedSwapPercentage = 9800;
 
         //Deploy on expectation of ~1m TVL ~ .1% gain
         harvestProfitMin = 1_000e18;
 
-        maxTendBaseFee = 300e9;
+        maxTendBaseFee = 200e9;
 
         //Initiall set to 1%
         maxEthPercent = 100;

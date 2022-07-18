@@ -135,7 +135,8 @@ def strategy(strategist, keeper, vault, Strategy, gov, gasOracle, strategist_ms)
 
     # make all harvests permissive unless we change the value lower
     gasOracle.setMaxAcceptableBaseFee(2000 * 1e9, {"from": strategist_ms})
-
+    #Set min swap fee lower due to current market
+    strategy.setMinExpectedSwapPercentage(9500)
     yield strategy
 
 
@@ -145,6 +146,8 @@ def test_strategy(strategist, keeper, vault, TestStrategy, gov):
     strategy.setKeeper(keeper)
     strategy.setDoHealthCheck(True, {"from": gov})
     vault.addStrategy(strategy, 10_000, 0, 2 ** 256 - 1, 1_000, {"from": gov})
+    #Set min swap fee lower due to current market
+    strategy.setMinExpectedSwapPercentage(9500)
     yield strategy
 
 
